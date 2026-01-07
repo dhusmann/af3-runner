@@ -1,50 +1,82 @@
 # AlphaFold3 Pipeline Scripts Summary
 
-## Complete Script List (Total: 28 scripts)
+This repo contains scripts for:
+- Creating AlphaFold3 job folders + `alphafold_input.json`
+- Running a two-stage pipeline on Sherlock/Slurm (MSA → GPU inference), with MSA reuse
+- Monitoring job progress
+- Organizing outputs + archiving MSAs + compressing seeds + syncing to Google Drive
 
-### Core Pipeline Scripts (7)
-1. **batch_reuse_msa.py** - Identifies and reuses existing MSAs
-2. **submit_msa_arrays.sh** - Distributes MSA jobs across partitions
-3. **submit_msa_array.sh** - Runs individual MSA generation
-4. **submit_dist.sh** - Manages GPU job distribution
-5. **submit_gpu.sh** - Runs individual GPU inference
-6. **launch_af3.sh** - Starts 48-hour automation
-7. **af3_48hr_cycle.sh** - Handles periodic execution
+## Key Entrypoints
 
-### Monitoring Scripts (5)
-8. **monitor_msa_arrays.sh** - Monitors MSA array jobs
-9. **get_job_status.sh** - Reports job stages and seeds
-10. **get_job_status_detailed.sh** - Advanced status with filters
-11. **pipeline_status.sh** - Quick dashboard view
-12. **pipeline_summary.sh** - Complete pipeline overview with sync status
+- **Create jobs**: `./createAF3query.sh --help`
+- **Run pipeline (automated cycles)**: `./launch_af3.sh`
+- **Sync + backup (compute-node, parallel)**: `./sync_all.sh`
 
-### Output Sync Scripts (6)
-13. **sync_organize_outputs.sh** - Syncs and organizes outputs locally
-14. **rclone_to_gdrive.sh** - Submits SLURM job for Google Drive upload
-15. **check_sync_status.sh** - Shows sync readiness
-16. **sync_all.sh** - Complete sync workflow
-17. **check_rclone_status.sh** - Monitor rclone SLURM jobs
-18. **clean_output_dir.sh** - Cleans output directory
+## Script List (Total: 45)
 
-### Utility Scripts (4)
-19. **cleanup_msa_tmp.sh** - Removes temporary MSA files
-20. **pipeline_quickstart.sh** - Validates setup
-21. **test_seed_detection.sh** - Tests seed completion detection
-22. **test_rclone_quota.sh** - Tests quota error handling (optional)
+### Job Creation (4)
+- `createAF3query.sh` - Unified job creation (PTMs incl. ALL/EACH; CCD + SMILES ligands)
+- `createHTS-AF3query.sh` - Wrapper: defaults to `jobs/human_test_set/` + `folding_jobs.csv`
+- `createAF3query_withSMILES.sh` - Wrapper: defaults to `jobs/human_test_set/` + `folding_jobs_nsd2i.csv`
+- `createBatchAF3queries.sh` - Batch helper that repeatedly calls `createAF3query.sh`
 
-### Helper Tools (Singles & maintenance) (6)
-23. **tools/find_single_enzyme_ligand_jobs.py** - Identify single-protein–ligand jobs
-24. **tools/clear_output_msa_jsons.py** - Remove `output_msa/*.json` for singles
-25. **tools/restore_jobs_to_csv.py** - Merge verified singles into `folding_jobs.csv`
-26. **tools/unixify_newlines.py** - Normalize CSVs to LF newlines
-27. **tools/remove_outputs_from_list.py** - Delete `jobs/<name>/output` for a list
-28. **tools/restore_jobs_from_list.py** - Add a list of jobs back to CSV
+### Core Pipeline (7)
+- `batch_reuse_msa.py` - MSA reuse + triage (`msa_array_jobs.csv`, `waiting_for_msa.csv`)
+- `submit_msa_arrays.sh` - Split + submit MSA arrays across partitions
+- `submit_msa_array.sh` - MSA-only worker (`--norun_inference`)
+- `submit_dist.sh` - GPU submitter (runs `batch_reuse_msa.py`, drains waiting list)
+- `submit_gpu.sh` - GPU worker (multi-chain inference-only; singles run full pipeline)
+- `launch_af3.sh` - Starts the automated cycling pipeline
+- `af3_48hr_cycle.sh` - SLURM cycle runner that re-submits itself
+
+### Monitoring (5)
+- `monitor_msa_arrays.sh` - MSA array monitor (`squeue`/`sacct` + quick hints)
+- `get_job_status.sh` - Stage scan + seed completion heuristic
+- `get_job_status_detailed.sh` - Adds filters + CSV export
+- `pipeline_status.sh` - Compact dashboard
+- `pipeline_summary.sh` - Expanded dashboard (includes sync readiness)
+
+### Output Organization + Sync (17)
+- `sync_all.sh` - One-command orchestrator (local processing + optional gdrive sync)
+- `sync_organize_outputs.sh` - Submits compute-node jobs (rsync, MSA archive, seed pack)
+- `sync_parallel.conf` - Parallelism + resource config for sync
+- `sync_job_discovery.sh` - Discovers output subdirs and chunks work for arrays
+- `sync_organize_rsync.sbatch` - SLURM array wrapper for rsync chunks
+- `sync_organize_rsync.sh` - Parallel rsync worker + destination routing
+- `archive_msa_data.sbatch` - SLURM array wrapper (one job-group per task)
+- `archive_msa_data.sh` - Deduplicating MSA archiver → `output/msa/*.tar.gz`
+- `compress_seeds_array.sbatch` - SLURM array wrapper (one output dir per task)
+- `compress_seeds.sh` - Creates `seeds.tar.gz` per run dir (keeps originals)
+- `compress_seeds.sbatch` - Older “one-job does everything” seed packing
+- `pack_seeds_human_test_set.sbatch` - Human-test-set-only seed packing
+- `check_sync_status.sh` - Reports what’s ready to sync (sizes, counts)
+- `clean_output_dir.sh` - Interactive reset of `output/`
+- `rclone_to_gdrive.sh` - Submits gdrive sync job (also backs up scripts/tools/analysis)
+- `rclone_retry.sh` - Retry wrapper for gdrive sync (quota handling)
+- `check_rclone_status.sh` - Monitor gdrive sync jobs + recent logs
+- `rclone_msa_to_gdrive.sh` - Legacy MSA-only rclone job (generally superseded)
+
+### Utilities (2)
+- `cleanup_msa_tmp.sh` - Removes `msa_array_jobs_part*.tmp` after arrays finish
+- `pipeline_quickstart.sh` - Validates setup (paths + required scripts)
+
+### Tools (10)
+- `tools/find_single_enzyme_ligand_jobs.py` - Verify singles list (1 protein + 1 ligand)
+- `tools/clear_output_msa_jsons.py` - Remove `output_msa/*.json` for verified singles
+- `tools/restore_jobs_to_csv.py` - Merge verified singles into `folding_jobs.csv`
+- `tools/unixify_newlines.py` - Convert pipeline CSVs to LF newlines
+- `tools/remove_outputs_from_list.py` - Remove `output/` dirs for a job list
+- `tools/restore_jobs_from_list.py` - Add a list back to `folding_jobs.csv`
+- `tools/msa_batch_extract_chain1.py` - Build single-chain `alphafold_input_with_msa.json` from donor jobs
+- `tools/msa_extract_chain1.py` - Single-job helper (development artifact)
+- `tools/move_msa_data.sh` - One-off helper to move `*_data.json` into `output_msa/`
+- `tools/remove_empty_outputs.sh` - One-off helper to remove empty `output/` dirs
 
 ## Quick Setup
 
 ```bash
 # Make all scripts executable
-chmod +x *.sh *.py
+chmod +x *.sh *.sbatch *.py tools/*.sh tools/*.py
 
 # Verify setup
 ./pipeline_quickstart.sh
@@ -63,6 +95,11 @@ chmod +x *.sh *.py
 - `launch_af3.sh` → `af3_48hr_cycle.sh` → `submit_dist.sh`
 - `submit_msa_arrays.sh` → `submit_msa_array.sh`
 - `submit_gpu.sh`
+
+### Creating Jobs
+- `createAF3query.sh` (unified)
+- `createHTS-AF3query.sh` (HTS defaults wrapper)
+- `createAF3query_withSMILES.sh` (SMILES defaults wrapper)
 
 ## Updates (2025-09-17)
 - `submit_dist.sh` (updated):

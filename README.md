@@ -8,6 +8,7 @@ High-throughput AlphaFold3 pipeline scripts for Sherlock/Slurm, plus utilities t
 - Output organization + sync: `README-OutputSyncAndOrganization.md`
 - Parallel sync deployment notes: `PARALLEL_SYNC_DEPLOYMENT.md`
 - Full script index: `SCRIPT_SUMMARY.md`
+- Job creation: `createAF3query.sh` (run `./createAF3query.sh --help`)
 
 ## Getting started (typical)
 
