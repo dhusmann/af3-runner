@@ -245,13 +245,12 @@ for name in "${UNIQUE_CLEAN_NAMES[@]}"; do
   fi
 done
 MOLECULE_NAME_PART="$(IFS=-; echo "${MOLECULE_NAME_PARTS[*]}")"
-FINAL_JOB_NAME="$MOLECULE_NAME_PART"
 
 # --- PTMs ---
 declare -A PTM_MAP=()   # 1-indexed key -> "json,json,"
-PTM_NAME_PART=""
+declare -A PTM_NAME_SUFFIX=()  # clean_name -> "_K43me1_KALLme1"
 
-for ptm_arg in "${PTM_ARGS[@]}"; do
+for ptm_arg in "${PTM_ARGS[@]+"${PTM_ARGS[@]}"}"; do
   if [[ "$ptm_arg" =~ ^ALL[[:space:]](.+)$ ]]; then
     ptm_type="${BASH_REMATCH[1]}"
 
@@ -273,7 +272,11 @@ for ptm_arg in "${PTM_ARGS[@]}"; do
         PTM_MAP["$last_protein_idx"]+="{\"ptmType\": \"$ccd_code\", \"ptmPosition\": $ptm_pos},"
       fi
     done
-    PTM_NAME_PART+="_KALL${ptm_type}"
+    target_name="${CLEAN_NAMES[$((last_protein_idx - 1))]}"
+    if (( ${MOLECULE_COUNTS[$target_name]:-0} > 1 )); then
+      echo "Warning: PTM targets '$target_name' which appears ${MOLECULE_COUNTS[$target_name]} times; job naming may be ambiguous." >&2
+    fi
+    PTM_NAME_SUFFIX["$target_name"]+="_KALL${ptm_type}"
     continue
   fi
 
@@ -300,7 +303,11 @@ for ptm_arg in "${PTM_ARGS[@]}"; do
     if (( lysine_count == 0 )); then
       echo "Warning: No lysine residues found in protein at index $ptm_file_idx" >&2
     fi
-    PTM_NAME_PART+="_KALL${ptm_type}"
+    target_name="${CLEAN_NAMES[$sequence_idx]}"
+    if (( ${MOLECULE_COUNTS[$target_name]:-0} > 1 )); then
+      echo "Warning: PTM targets '$target_name' which appears ${MOLECULE_COUNTS[$target_name]} times; job naming may be ambiguous." >&2
+    fi
+    PTM_NAME_SUFFIX["$target_name"]+="_KALL${ptm_type}"
     continue
   fi
 
@@ -315,24 +322,53 @@ for ptm_arg in "${PTM_ARGS[@]}"; do
   (( ptm_pos <= ${#sequence} )) || die "PTM position $ptm_pos out of range for FASTA index $ptm_file_idx (len=${#sequence})"
 
   residue="${sequence:$((ptm_pos - 1)):1}"
-  PTM_NAME_PART+="_${residue}${ptm_pos}${ptm_type}"
+  target_name="${CLEAN_NAMES[$sequence_idx]}"
+  if (( ${MOLECULE_COUNTS[$target_name]:-0} > 1 )); then
+    echo "Warning: PTM targets '$target_name' which appears ${MOLECULE_COUNTS[$target_name]} times; job naming may be ambiguous." >&2
+  fi
+  PTM_NAME_SUFFIX["$target_name"]+="_${residue}${ptm_pos}${ptm_type}"
 
   ccd_code="${CCD_MAP[$ptm_type]:-}"
   [[ -n "$ccd_code" ]] || die "Unknown PTM type '$ptm_type' (known: ${!CCD_MAP[*]})"
   PTM_MAP["$ptm_file_idx"]+="{\"ptmType\": \"$ccd_code\", \"ptmPosition\": $ptm_pos},"
 done
 
-FINAL_JOB_NAME+="$PTM_NAME_PART"
+build_molecule_name_with_ptm_suffixes() {
+  local extra_target_name="${1:-}"
+  local extra_suffix="${2:-}"
+  local parts=()
+
+  for i in "${!UNIQUE_CLEAN_NAMES[@]}"; do
+    local name="${UNIQUE_CLEAN_NAMES[$i]}"
+    local base="${MOLECULE_NAME_PARTS[$i]}"
+    local suffix="${PTM_NAME_SUFFIX[$name]:-}"
+
+    if [[ -n "$extra_target_name" && "$name" == "$extra_target_name" ]]; then
+      suffix+="$extra_suffix"
+    fi
+
+    parts+=("${base}${suffix}")
+  done
+
+  (IFS=-; echo "${parts[*]}")
+}
+
+FINAL_JOB_NAME="$(build_molecule_name_with_ptm_suffixes)"
 
 # --- EACH PTMs (one job per lysine) ---
 EACH_JOBS=()
 HAS_EACH_PTM=false
-for each_ptm_arg in "${EACH_PTM_ARGS[@]}"; do
+for each_ptm_arg in "${EACH_PTM_ARGS[@]+"${EACH_PTM_ARGS[@]}"}"; do
   HAS_EACH_PTM=true
   read -r ptm_file_idx ptm_type <<<"$each_ptm_arg"
   (( ptm_file_idx >= 1 && ptm_file_idx <= ${#SEQUENCES[@]} )) || die "Invalid FASTA index for --ptm EACH: $ptm_file_idx"
   sequence_idx=$((ptm_file_idx - 1))
   [[ "${MOLECULE_TYPES[$sequence_idx]}" == "protein" ]] || die "PTMs can only be applied to proteins (idx $ptm_file_idx is ${MOLECULE_TYPES[$sequence_idx]})"
+
+  target_name="${CLEAN_NAMES[$sequence_idx]}"
+  if (( ${MOLECULE_COUNTS[$target_name]:-0} > 1 )); then
+    echo "Warning: EACH PTM targets '$target_name' which appears ${MOLECULE_COUNTS[$target_name]} times; job naming may be ambiguous." >&2
+  fi
 
   ccd_code="${CCD_MAP[$ptm_type]:-}"
   [[ -n "$ccd_code" ]] || die "Unknown PTM type '$ptm_type' (known: ${!CCD_MAP[*]})"
@@ -392,16 +428,18 @@ if [[ -n "$LIGANDS_STR" ]]; then
     fi
   done
 
-  # Build stoichiometric ligand name part (preserve order of first appearance)
-  declare -A LIGAND_COUNTS=()
-  UNIQUE_LIGANDS=()
-  for entry in "${LIGAND_ENTRIES[@]}"; do
-    ligand_id="${entry%|*}"
-    LIGAND_COUNTS["$ligand_id"]=$(( ${LIGAND_COUNTS[$ligand_id]:-0} + 1 ))
-    if [[ ! " ${UNIQUE_LIGANDS[*]} " =~ " ${ligand_id} " ]]; then
-      UNIQUE_LIGANDS+=("$ligand_id")
-    fi
-  done
+	  # Build stoichiometric ligand name part (preserve order of first appearance)
+	  declare -A LIGAND_COUNTS=()
+	  declare -A LIGAND_SEEN=()
+	  UNIQUE_LIGANDS=()
+	  for entry in "${LIGAND_ENTRIES[@]+"${LIGAND_ENTRIES[@]}"}"; do
+	    ligand_id="${entry%|*}"
+	    LIGAND_COUNTS["$ligand_id"]=$(( ${LIGAND_COUNTS[$ligand_id]:-0} + 1 ))
+	    if [[ -z "${LIGAND_SEEN[$ligand_id]:-}" ]]; then
+	      UNIQUE_LIGANDS+=("$ligand_id")
+	      LIGAND_SEEN["$ligand_id"]=1
+	    fi
+	  done
 
   LIGAND_NAME_PARTS=()
   for ligand_id in "${UNIQUE_LIGANDS[@]}"; do
@@ -473,7 +511,7 @@ create_job() {
     ((chain_id_ascii++))
   done
 
-  for entry in "${LIGAND_ENTRIES[@]}"; do
+  for entry in "${LIGAND_ENTRIES[@]+"${LIGAND_ENTRIES[@]}"}"; do
     local ligand_id="${entry%|*}"
     local ligand_type="${entry#*|}"
     local chain_id
@@ -510,7 +548,7 @@ EOF
 }
 
 if [[ "$HAS_EACH_PTM" == true ]]; then
-  for each_job in "${EACH_JOBS[@]}"; do
+  for each_job in "${EACH_JOBS[@]+"${EACH_JOBS[@]}"}"; do
     IFS=':' read -r ptm_file_idx ptm_pos ptm_type ccd_code <<<"$each_job"
 
     ligand_suffix=""
@@ -518,8 +556,8 @@ if [[ "$HAS_EACH_PTM" == true ]]; then
       ligand_suffix="-$LIGAND_NAME_PART_STR"
     fi
 
-    # Preserve historical naming from createHTS-AF3query.sh: base molecule names + _K{pos}{type} + ligands.
-    each_job_name="${MOLECULE_NAME_PART}_K${ptm_pos}${ptm_type}${ligand_suffix}"
+    target_name="${CLEAN_NAMES[$((ptm_file_idx - 1))]}"
+    each_job_name="$(build_molecule_name_with_ptm_suffixes "$target_name" "_K${ptm_pos}${ptm_type}")${ligand_suffix}"
     create_job "$each_job_name" "$ptm_file_idx" "$ptm_pos" "$ptm_type" "$ccd_code"
   done
 else
