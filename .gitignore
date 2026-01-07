@@ -1,0 +1,22 @@
+# Cluster/runtime outputs
+jobs/
+output/
+analysis/
+logs/
+sync_checkpoints/
+
+# Pipeline state / CSVs (generated in run directory)
+folding_jobs.csv
+folding_jobs_*.csv
+msa_array_jobs.csv
+waiting_for_msa.csv
+logged_*.csv
+
+# Temporary / log artifacts
+*.out
+*.err
+*.log
+*.tmp
+*.lastlog
+rclone_output.tmp
+
